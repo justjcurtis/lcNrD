@@ -1,6 +1,12 @@
+import sys
 import argparse
 import re 
 import random as r
+import fnmatch
+import os
+import itertools
+
+global lines
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter, add_help=False)
 parser.add_argument('-v', '--version', action='version',
@@ -19,6 +25,12 @@ parser.add_argument("-od", "--output_delimiter", type=str,
 
 # store true or false so we can just be like 'if args.lowercase:'
 # so use true or false values instead of comparing strings
+parser.add_argument("-m", "--missing_keys", type=str,
+    help='add -m "path/To/Key/File.*" to show keys missing in input file')
+parser.add_argument("-S", "--search", type=str,
+    help='add -S "path/To/Key/File.*" to count occurences of keys in file or folder')
+parser.add_argument("-F", "--filter", type=str,
+    help='add -F to filter searches by file extension, multiple file extentions can be added as comma seperated values')
 parser.add_argument('-l', "--lowercase", action='store_true',
     help='add -l to set lowercase to true')
 parser.add_argument('-d', "--duplicates", action='store_true',
@@ -45,225 +57,319 @@ parser.add_argument('-kae', "--keyword_add_end", type=str,
     help='add a -kae to add some text to the end of every line')
 args = parser.parse_args()
 
-# check if input_delimiter is set to default & if so rectify escape character
-# this escapse character is left in so that the default value displays correctly in -h
-if(args.input_delimiter == "\\n"):
-    args.input_delimiter = "\n"
-
-# set output delimiter to input delimiter if output delimiter isn't set
-if(args.output_delimiter == None):
-    args.output_delimiter = args.input_delimiter
-
-print('Grabbing file contents...')
-
-# open the target file & grab its contents. Using `with` like this automatically
-# closes the file for us when we leave the indentation.
-with open(args.file, "r") as fp:
-    text = fp.read()
-
-# let's create an array of the lines
-lines = text.split(args.input_delimiter)
-
-# Remove blank lines
-if args.blank_lines:
-    print('Removing blank lines...')
-    temp = ''
-    for i in lines:
-        if len(i) != 0:
-            temp+='\n'+i
- 
-    # lines now = temp split, minus the first element which is an empty element
-    lines = temp.split('\n')[1:]  
-
-# 
-if args.keyword_delete_before != None:
-    print('removing text before delete keyword...')
-    temp = ''
-
-    # loop through all elements in the lines array
-    for i in lines:
-        # 
-        new = i.split(args.keyword_delete_before)
-        if len(new)>1:
-            t = new[1:]
-            ret = ''
-            for a in t:
-                ret+=a+args.keyword_delete_before
+def countFiles(basePath):
+    count = 0
+    for root, dirnames, filenames in os.walk(basePath):
+        # Apply file extension filters
+        filenamesFiltered = []
+        if(len(args.filter)>0):
+            for ext in args.filter:
+                filenamesFiltered = list(itertools.chain(filenamesFiltered, fnmatch.filter(filenames, f"*.{ext}")))
         else:
-            ret = i
-        temp+='\n'+ret
-    
-    # lines now = temp split, minus the first element which is an empty element
-    lines = temp.split('\n')[1:]   
+            filenamesFiltered = fnmatch.filter(filenames, f"*.*")
+        for filename in filenamesFiltered:
+            count += 1
+        for dirr in dirnames:
+            count += countFiles(os.path.join(root, dirr))
+    return count
 
-# 
-if args.keyword_delete_after != None:
-    print('removing text after delete keyword...')
-    temp = ''
-
-    # loop through all elements in the lines array
-    for i in lines:
-        # 
-        new = i.split(args.keyword_delete_after)
-        if len(new)>1:
-            t = new[:1]
-            ret = ''
-            for a in t:
-                ret+=a+args.keyword_delete_after
+def performSearch(startDirPath, keys, r=False, i=0, fileCount=-1):
+    matches = []
+    if(fileCount == -1):
+        print("Enumerating files...")
+        fileCount = countFiles(startDirPath)
+    for root, dirnames, filenames in os.walk(startDirPath):
+        # Apply file extension filters
+        filenamesFiltered = []
+        if(len(args.filter)>0):
+            for ext in args.filter:
+                filenamesFiltered = list(itertools.chain(filenamesFiltered, fnmatch.filter(filenames, f"*.{ext}")))
         else:
-            ret = i
-        temp+='\n'+ret
-    
-    # lines now = temp split, minus the first element which is an empty element
-    lines = temp.split('\n')[1:]          
+            filenamesFiltered = fnmatch.filter(filenames, f"*.*")
 
-# Remove lines that are UNDER min character requirements
-if args.character_min > 0:
-    print('Removing lines under min character requirements...')
-    temp = ''
-    for i in lines:
-        if len(i) > args.character_min-1:
-            temp+='\n'+i
+        for filename in filenamesFiltered:
+            i += 1
+            sys.stdout.write(f"\rSearching {i} of {fileCount} files..")
+            sys.stdout.flush()
+            try:
+                lines = [line.rstrip('\n') for line in open(os.path.join(root, filename))]
+            except:
+                continue
+            for line in lines:
+                for key in keys:
+                    if key in line:
+                        matches.append(key)
+        for dirr in dirnames:
+            arr = performSearch(os.path.join(root, dirr), keys, True, i, fileCount)
+            newMatches = arr[0]
+            i = arr[1]
+            matches = list(itertools.chain(matches, newMatches))
+    if r:
+        return [matches, i]
 
-    # lines now = temp split, minus the first element which is an empty element
-    lines = temp.split('\n')[1:]        
+    print("")
+    resultingLines = []
+    minOccurance = -1
+    for key in keys:
+        count = matches.count(key)
+        if(minOccurance == -1 or count < minOccurance):
+            minOccurance = count
+        resultingLines.append(f"{key}: {count}")
+    if(minOccurance != -1):
+        resultingLines.append("")
+        resultingLines.append(f"Minimum occurance: {minOccurance}")
+    return resultingLines
 
-# Remove lines that are OVER max character requirements
-if args.character_max != None:
-    print('Removing lines over max character requirements...')
-    temp = ''
-    for i in lines:
-        if len(i) < args.character_max+1:
-            temp+='\n'+i
+def search():
+    args.replace_file = False
+    args.out = f"searchResults_{args.search}"
+    print("Reading keys...")
+    keys = readFile(args.search)
+    args.filter = args.filter.split(',')
+    results = performSearch(args.file, keys)
+    save(results)
+    pass
 
-    # lines now = temp split, minus the first element which is an empty element
-    lines = temp.split('\n')[1:]        
+def showMissing():
+    global lines
+    getInputFile()
+    print("Reading keys...")
+    keys = readFile(args.missing_keys)
+    print("Comparing..")
+    missingLines = set(keys).difference(lines)
+    save(missingLines)
 
-# this checks if there is a removal keyword & performs this operation if so
-if args.keyword_removal != None:
-    print('removing lines with removal keyword...')
+def normal():
+    getInputFile()
+    removeBlankLines()
+    removeBeforeKeyword()
+    removeAfterKeyword()
+    removeOverMinCharLines()
+    removeOverMaxCharLines()
+    removeKeywords()
+    lowercaseEverything()
+    removeDuplicates()
+    shuffle()
+    save()
 
-    temp = ''
+def getInputFile():
+    global lines
+    print('Grabbing file contents...')
+    lines = readFile(args.file)
 
-    # 
-    if ("*." in args.keyword_removal):
-        print("file used!")
-        print('Reading filter keywords...')
+def readFile(filepath):
+    # open the target file & grab its contents. Using `with` like this automatically
+    # closes the file for us when we leave the indentation.
+    with open(filepath, "r") as fp:
+        text = fp.read()
 
-        # open the keyword keep file & save a reference to its contents
-        with open(args.keyword_removal.replace('*',''), "r") as fp:
-            filt = fp.read().split('\n')
+    # let's create an array of the lines
+    return text.split(args.input_delimiter)
 
-        keeper = []
-
-        print('filter keywords from file...')
-        # now we break up the lines, break up the filter keywords, then compare each word
+def removeBlankLines():
+    global lines
+    # Remove blank lines
+    if args.blank_lines:
+        print('Removing blank lines...')
+        temp = ''
         for i in lines:
-            for j in (i.split()):
-                for k in filt:
-                    if j != k and i not in keeper:
-                        keeper.append(i)
-                        temp += '\n'+i
-        
+            if len(i) != 0:
+                temp+='\n'+i
+    
         # lines now = temp split, minus the first element which is an empty element
-        lines = temp.split('\n')[1:]
-    else:
+        return temp.split('\n')[1:]
+
+def removeBeforeKeyword():
+    global lines
+    # 
+    if args.keyword_delete_before != None:
+        print('removing text before delete keyword...')
+        temp = ''
 
         # loop through all elements in the lines array
         for i in lines:
-            # if not containing the removal keyword, then add it to temp
-            if args.keyword_removal not in i:
-                temp+='\n'+i
+            # 
+            new = i.split(args.keyword_delete_before)
+            if len(new)>1:
+                t = new[1:]
+                ret = ''
+                for a in t:
+                    ret+=a+args.keyword_delete_before
+            else:
+                ret = i
+            temp+='\n'+ret
         
         # lines now = temp split, minus the first element which is an empty element
-        lines = temp.split('\n')[1:]
+        lines = temp.split('\n')[1:]   
 
-# this checks if there is a removal keyword & performs this operation if so
-if args.keyword_keep != None:
-    print('removing lines without keep keyword...')
-
-    temp = ''
-
+def removeAfterKeyword():
+    global lines
     # 
-    if ("*." in args.keyword_keep):
-        print("file used!")
-        print('Reading filter keywords...')
-
-        # open the keyword keep file & save a reference to its contents
-        with open(args.keyword_keep.replace('*',''), "r") as fp:
-            filt = fp.read().split('\n')
-
-        keeper = []
-
-        print('filter keywords from file...')
-        # now we break up the lines, break up the filter keywords, then compare each word
-        for i in lines:
-            for j in (i.split()):
-                for k in filt:
-                    if j == k and i not in keeper:
-                        keeper.append(i)
-                        temp += '\n'+i
-        
-        # lines now = temp split, minus the first element which is an empty element
-        lines = temp.split('\n')[1:]
-    else:
-        print("keyword used!")
+    if args.keyword_delete_after != None:
+        print('removing text after delete keyword...')
+        temp = ''
 
         # loop through all elements in the lines array
         for i in lines:
-            # if not containing the removal keyword, then add it to temp
-            if args.keyword_keep in i:
-                temp+='\n'+i
+            # 
+            new = i.split(args.keyword_delete_after)
+            if len(new)>1:
+                t = new[:1]
+                ret = ''
+                for a in t:
+                    ret+=a+args.keyword_delete_after
+            else:
+                ret = i
+            temp+='\n'+ret
         
+        # lines now = temp split, minus the first element which is an empty element
+        lines = temp.split('\n')[1:]          
+
+def removeOverMinCharLines():
+    global lines
+    # Remove lines that are UNDER min character requirements
+    if args.character_min > 0:
+        print('Removing lines under min character requirements...')
+        temp = ''
+        for i in lines:
+            if len(i) > args.character_min-1:
+                temp+='\n'+i
+
+        # lines now = temp split, minus the first element which is an empty element
+        lines = temp.split('\n')[1:]        
+
+def removeOverMaxCharLines():
+    global lines
+    # Remove lines that are OVER max character requirements
+    if args.character_max != None:
+        print('Removing lines over max character requirements...')
+        temp = ''
+        for i in lines:
+            if len(i) < args.character_max+1:
+                temp+='\n'+i
+
+        # lines now = temp split, minus the first element which is an empty element
+        lines = temp.split('\n')[1:]        
+
+def removeKeywords():
+    global lines
+    # this checks if there is a removal keyword & performs this operation if so
+    if args.keyword_keep != None:
+        print('removing lines without keep keyword...')
+
+        temp = ''
+
+        # 
+        if ("*." in args.keyword_keep):
+            print("file used!")
+            print('Reading filter keywords...')
+
+            # open the keyword keep file & save a reference to its contents
+            with open(args.keyword_keep.replace('*',''), "r") as fp:
+                filt = fp.read().split('\n')
+
+            keeper = []
+
+            print('filter keywords from file...')
+            # now we break up the lines, break up the filter keywords, then compare each word
+            for i in lines:
+                for j in (i.split()):
+                    for k in filt:
+                        if j == k and i not in keeper:
+                            keeper.append(i)
+                            temp += '\n'+i
+            
+            # lines now = temp split, minus the first element which is an empty element
+            lines = temp.split('\n')[1:]
+        else:
+            print("keyword used!")
+
+            # loop through all elements in the lines array
+            for i in lines:
+                # if not containing the removal keyword, then add it to temp
+                if args.keyword_keep in i:
+                    temp+='\n'+i
+            
+            # lines now = temp split, minus the first element which is an empty element
+            lines = temp.split('\n')[1:]
+
+def lowercaseEverything():
+    global lines
+    # convert to lowercase while we have the initial string. so only one function
+    # call and no loops needed.
+    if args.lowercase:
+        print('lowercasing contents...')
+        lines = [x.lower() for x in lines]
+
+
+def removeDuplicates():
+    global lines
+    # remove duplicates by making the list a `set` which automatically makes
+    # everything unique. Again no loops, just 1 function call.
+    if args.duplicates:
+        print('removing duplicates...')
+        lines = set(lines)
+
+    # 
+    if args.keyword_add_end != None:
+        print('adding keyword to end...')
+        temp = ''
+        
+        for i in lines:
+            temp+='\n'+i+args.keyword_add_end
+
         # lines now = temp split, minus the first element which is an empty element
         lines = temp.split('\n')[1:]
 
-# convert to lowercase while we have the initial string. so only one function
-# call and no loops needed.
-if args.lowercase:
-    print('lowercasing contents...')
-    lines = [x.lower() for x in lines]
 
+def shuffle():
+    global lines
+    # shuffle the list of content if -s is added
+    if args.shuffle:
+        print('shuffling content...')
+        r.shuffle(lines)
 
-# remove duplicates by making the list a `set` which automatically makes
-# everything unique. Again no loops, just 1 function call.
-if args.duplicates:
-    print('removing duplicates...')
-    lines = set(lines)
-
-# 
-if args.keyword_add_end != None:
-    print('adding keyword to end...')
-    temp = ''
-    
-    for i in lines:
-        temp+='\n'+i+args.keyword_add_end
-
-    # lines now = temp split, minus the first element which is an empty element
-    lines = temp.split('\n')[1:]
-
-# set the name of the new converted file
-if not args.out:
-    if args.replace_file:
-        print('replacing orginal file...')
-        args.out = args.file
+def save(adhoc=None):
+    global lines
+    if adhoc != None:
+        linesToSave = adhoc
     else:
-    # ok this is a little bit obscure but its reverse splitting an string into
-    # a list once so 'dir/file.txt' -> ['dir/file', 'txt']. then the '*' before
-    # it when passed to format tells format to read the list as mulptiple args.
-        args.out = "{}_lcNrD.{}".format(*args.file.rsplit(".", 1))
+        linesToSave = lines
+    # set the name of the new converted file
+    if not args.out:
+        if args.replace_file:
+            print('replacing orginal file...')
+            args.out = args.file
+        else:
+        # ok this is a little bit obscure but its reverse splitting an string into
+        # a list once so 'dir/file.txt' -> ['dir/file', 'txt']. then the '*' before
+        # it when passed to format tells format to read the list as mulptiple args.
+            args.out = "{}_lcNrD.{}".format(*args.file.rsplit(".", 1))
+    # save the converted file
+    with open(args.out, "w") as fp:
+        # strings are immutable in python so every time you add two strings together
+        # its creating a brand new one. This gets quickly gets slow with lots of text
+        # so we wanna do this as little as possible. Using join on the list means
+        # we just make all the string concatenation opertations in one go.
+        fp.write(args.output_delimiter.join(linesToSave))
 
-# shuffle the list of content if -s is added
-if args.shuffle:
-    print('shuffling content...')
-    r.shuffle(lines)
+    print('...& DONE!')
 
-# save the converted file
-with open(args.out, "w") as fp:
-    # strings are immutable in python so every time you add two strings together
-    # its creating a brand new one. This gets quickly gets slow with lots of text
-    # so we wanna do this as little as possible. Using join on the list means
-    # we just make all the string concatenation opertations in one go.
-    fp.write(args.output_delimiter.join(lines))
+def run():
+    # check if input_delimiter is set to default & if so rectify escape character
+    # this escape character is left in so that the default value displays correctly in -h
+    if(args.input_delimiter == "\\n"):
+        args.input_delimiter = "\n"
 
-print('...& DONE!')
+    # set output delimiter to input delimiter if output delimiter isn't set
+    if(args.output_delimiter == None):
+        args.output_delimiter = args.input_delimiter
+
+    if(args.search != None):
+        search()
+    elif(args.missing_keys):
+        showMissing()
+    else:
+        normal()
+
+run()
